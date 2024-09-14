@@ -1,8 +1,12 @@
 #include "portaudio.h" // portaudio library uses camel case, so  this project will use camel case
+#include "kiss_fft/kiss_fftr.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
 #include <iostream>
+#include <cmath>
+
+using std::string;
 
 using std::vector;
 
@@ -154,19 +158,144 @@ public:
     }
 };
 
+class fft_data
+{
+private:
+    kiss_fftr_cfg config;
+    kiss_fft_scalar *input;
+    kiss_fft_cpx *output;
+    double nfft;
+
+public:
+    fft_data(double nfft)
+    {
+        this->nfft = nfft;
+        config = kiss_fftr_alloc(nfft, 0, NULL, NULL);
+        input = (kiss_fft_scalar *)malloc(sizeof(kiss_fft_scalar) * nfft);
+        output = (kiss_fft_cpx *)malloc(sizeof(kiss_fft_cpx) * (nfft / 2 + 1));
+    }
+
+    ~fft_data()
+    {
+        free(input);
+        free(output);
+        free(config);
+    }
+
+    void set_input(vector<float> &input_buffer, int channel_num)
+    {
+        for (int i = 0; i < input_buffer.size(); i += channel_num)
+        {
+            input[i / channel_num] = input_buffer[i];
+        }
+
+        kiss_fftr(config, input, output);
+    }
+
+    kiss_fft_cpx *get_raw_output() const
+    {
+        return output;
+    }
+
+    vector<float> get_amplitude_output() const
+    {
+        vector<float> amplitudes;
+        for (int i = 0; i < nfft / 2 + 1; i++)
+        {
+            float amplitude = sqrt(output[i].r * output[i].r + output[i].i * output[i].i);
+            amplitudes.push_back(amplitude);
+        }
+        return amplitudes;
+    }
+
+    vector<float> get_normalised_amplitude_output() const
+    {
+        float max_amplitude = 0.0f;
+
+        vector<float> amplitudes = get_amplitude_output();
+        for (int i = 0; i < amplitudes.size(); i++)
+        {
+            if (amplitudes[i] > max_amplitude)
+            {
+                max_amplitude = amplitudes[i];
+            }
+        }
+
+        if (max_amplitude > 0)
+        {
+            for (int i = 0; i < amplitudes.size(); i++)
+            {
+                amplitudes[i] = amplitudes[i] / max_amplitude;
+            }
+        }
+        return amplitudes;
+    }
+};
+
 int main()
 {
-    audio_data audio(2, SAMPLE_RATE, FRAMES_PER_BUFFER); // audio object with device number 1, 2 channels, sample rate 44100, and frames per buffer 512
+    int channel_num = 2;
+
+    audio_data audio(channel_num, SAMPLE_RATE, FRAMES_PER_BUFFER); // audio object with device number 1, 2 channels, sample rate 44100, and frames per buffer 512
+    fft_data fft(FRAMES_PER_BUFFER);
 
     while (true)
     {
         vector<float> input_buffer = audio.get_input_buffer();
-        for (int i = 0; i < input_buffer.size(); i += 2)
+
+        fft.set_input(input_buffer, channel_num);
+
+        string output;
+        std::cout << "\033[H";
+
+        vector<float> amplitudes = fft.get_normalised_amplitude_output();
+
+        for (int i = 0; i < amplitudes.size(); i++)
         {
-            printf("left: %f, right: %f\n", input_buffer[i], input_buffer[i + 1]);
+            float amplitude = amplitudes[i];
+
+            printf("%d: %f\n", i, amplitude);
+
+            if (amplitude < 0.125)
+            {
+                output += "▁";
+            }
+            else if (amplitude < 0.25)
+            {
+                output += "▂";
+            }
+            else if (amplitude < 0.375)
+            {
+                output += "▃";
+            }
+            else if (amplitude < 0.5)
+            {
+                output += "▄";
+            }
+            else if (amplitude < 0.625)
+            {
+                output += "▅";
+            }
+            else if (amplitude < 0.75)
+            {
+                output += "▆";
+            }
+            else if (amplitude < 0.875)
+            {
+                output += "▇";
+            }
+            else
+            {
+                output += "█";
+            }
         }
-        audio.set_output_buffer(input_buffer);
+        std::cout << output << std::flush;
+
+        Pa_Sleep(50);
     }
+
+    audio.~audio_data();
+    fft.~fft_data();
 
     return 0;
 }
