@@ -114,6 +114,7 @@ public:
         check_error(err);
     }
 
+    // prints the device information into the terminal
     void print_device_info() const
     {
 
@@ -146,25 +147,28 @@ public:
         }
     }
 
+    // returns the input buffer, which is the waveform data of microphone input audio frames
     const vector<float> &get_input_buffer()
     {
         Pa_ReadStream(stream, input_buffer.data(), frames_per_buffer);
         return input_buffer;
     }
 
+    // writes waveform data to the output buffer which plays sound
     void set_output_buffer(vector<float> output_buffer) const
     {
         Pa_WriteStream(stream, output_buffer.data(), frames_per_buffer);
     }
 };
 
+// fft_data class that contains the Fast Fourier Transform (FFT) algorithm
 class fft_data
 {
 private:
-    kiss_fftr_cfg config;
-    kiss_fft_scalar *input;
-    kiss_fft_cpx *output;
-    double nfft;
+    kiss_fftr_cfg config;   // contains the configuration of the FFT algorithm
+    kiss_fft_scalar *input; // a malloc, input for the FFT algorithm
+    double nfft;            // the number of samples of the input
+    kiss_fft_cpx *output;   // a malloc, output from the input into the FFT algorithm, the output is a complex number, and contains nfft/2+1 elements
 
 public:
     fft_data(double nfft)
@@ -182,6 +186,7 @@ public:
         free(config);
     }
 
+    // sets the input for the FFT algorithm, and populates the output
     void set_input(vector<float> &input_buffer, int channel_num)
     {
         for (int i = 0; i < input_buffer.size(); i += channel_num)
@@ -192,69 +197,176 @@ public:
         kiss_fftr(config, input, output);
     }
 
+    // gets the raw output from the FFT algorithm
     kiss_fft_cpx *get_raw_output() const
     {
         return output;
     }
 
+    // gets the amplitude (magnitude of the complex values) output from the FFT algorithm
     vector<float> get_amplitude_output() const
     {
         vector<float> amplitudes;
         for (int i = 0; i < nfft / 2 + 1; i++)
         {
-            float amplitude = sqrt(output[i].r * output[i].r + output[i].i * output[i].i);
+            float amplitude = sqrt(output[i].r * output[i].r + output[i].i * output[i].i); // magnitude of the complex number
             amplitudes.push_back(amplitude);
-        }
-        return amplitudes;
-    }
-
-    vector<float> get_normalised_amplitude_output() const
-    {
-        float max_amplitude = 0.0f;
-
-        vector<float> amplitudes = get_amplitude_output();
-        for (int i = 0; i < amplitudes.size(); i++)
-        {
-            if (amplitudes[i] > max_amplitude)
-            {
-                max_amplitude = amplitudes[i];
-            }
-        }
-
-        if (max_amplitude > 0)
-        {
-            for (int i = 0; i < amplitudes.size(); i++)
-            {
-                amplitudes[i] = amplitudes[i] / max_amplitude;
-            }
         }
         return amplitudes;
     }
 };
 
+// normalises all the values in the array so that the maximum value is 1 and minimum is 0
+void normalise_array(vector<float> &array)
+{
+    float max_value = 0.0f;
+
+    for (int i = 0; i < array.size(); i++)
+    {
+        if (array[i] > max_value)
+        {
+            max_value = array[i];
+        }
+    }
+
+    // divides all values by the maximum values to normalise the values
+    // (meaning that largest value in the array will have a value of 1)
+    if (max_value > 0)
+    {
+        for (int i = 0; i < array.size(); i++)
+        {
+            array[i] = array[i] / max_value;
+        }
+    }
+}
+
+// gets frequency values in an exponential scale
+float exponential_freq_width(int max_freq, int min_freq, int num_bins, int x)
+{
+    // translate the graph with an x translation to make the first value (0) be the min_freq
+    float x_translation = log10(min_freq) * num_bins / log10(max_freq);
+
+    // scale the x value to the number of bins, y(x_increment * num_bins) = max_freq
+    float x_increment = (num_bins - x_translation) / num_bins;
+    x = x * x_increment;
+
+    // scale the y value to the frequency range, each x increments increases the frequency by a power of 10, until it reaches the max frequency at num_bins
+    float y = pow(10, (log10(max_freq) * (x + x_translation)) / num_bins);
+
+    return y;
+}
+
+// converts the amplitude values to frequency bins
+vector<float> to_freq_bins(vector<float> amplitudes, int num_bins, int sample_rate)
+{
+    int max_freq = sample_rate / 2;                          // the maximum frequency is half of the sample rate
+    float amp_freq_increment = max_freq / amplitudes.size(); // the increment of the frequency for each amplitude
+    // 0th index is 0, 1st index is 1 * amp_freq_increment, 2nd index is 2 * amp_freq_increment, etc.
+    // however, we can also consider each amplitude as a frequency range, with its frequecy value being the middle of the range
+    // therefore, the frequency range of each amplitude is also amp_freq_increment
+
+    int half_freq_range = amp_freq_increment / 2; // because amp_freq_increment is the range of each amplitude, we divide it by 2 to get the middle of the range
+    int min_freq = half_freq_range;               // the minimum frequency is also the same as half of the frequency range
+
+    vector<float> freq_bins; // the frequency bins, each bin is a range of frequencies with its amplitude value
+
+    for (int i = 0; i < num_bins; i++)
+    {
+        // finding the start and end frequency of the bin
+        float start_freq = exponential_freq_width(max_freq, min_freq, num_bins, i);
+        float end_freq = exponential_freq_width(max_freq, min_freq, num_bins, i + 1);
+
+        // storing the amplitudes of a frequency bin
+        vector<float> bin_amplitudes;
+
+        for (int j = 1; j < amplitudes.size(); j++)
+        {
+            float amp_freq = j * amp_freq_increment;         // middle frequency range value of the amplitude
+            float min_amp_freq = amp_freq - half_freq_range; // start frequency of the amplitude
+            float max_amp_freq = amp_freq + half_freq_range; // end frequency of the amplitude
+
+            // skip to the next frequency bin if the amplitude frequency is greater than the end frequency
+            if (min_amp_freq >= end_freq)
+            {
+                break;
+            }
+
+            // if the amplitude frequency is within the frequency bin, add the amplitude to the bin
+            if (max_amp_freq >= start_freq && min_amp_freq <= end_freq)
+            {
+                // checking if the ampitude frequency is out of bounds of the frequency bin
+                float amp_freq_outbounds = 0.0f;
+
+                if (min_amp_freq < start_freq)
+                {
+                    amp_freq_outbounds += start_freq - min_amp_freq;
+                }
+
+                if (max_amp_freq > end_freq)
+                {
+                    amp_freq_outbounds += max_amp_freq - end_freq;
+                }
+
+                // average the amplitude in proportion to its frequency range that is in the bin
+                float amp_freq_inbounds = amp_freq_increment - amp_freq_outbounds;
+
+                // add the average amplitude that is in the bin, inside the bin
+                bin_amplitudes.push_back(amplitudes[j] * (amp_freq_inbounds / amp_freq_increment));
+            }
+        }
+
+        // if there are no amplitudes in the bin, add a 0 amplitude
+        if (bin_amplitudes.size() == 0)
+        {
+            freq_bins.push_back(0.0f);
+            continue;
+        }
+
+        // average the amplitudes collected in the amplitudes of a bin
+        float bin_avg_amplitude = 0.0f;
+
+        for (int j = 0; j < bin_amplitudes.size(); j++)
+        {
+            bin_avg_amplitude += bin_amplitudes[j];
+        }
+        bin_avg_amplitude /= bin_amplitudes.size();
+
+        // storing the average of each bin inside the frequency bins
+        freq_bins.push_back(bin_avg_amplitude);
+    }
+
+    return freq_bins;
+}
+
 int main()
 {
+    // number of channels to record (2 is stereo, 1 is mono)
     int channel_num = 2;
 
     audio_data audio(channel_num, SAMPLE_RATE, FRAMES_PER_BUFFER); // audio object with device number 1, 2 channels, sample rate 44100, and frames per buffer 512
-    fft_data fft(FRAMES_PER_BUFFER);
+    fft_data fft(FRAMES_PER_BUFFER);                               // object to store the FFT algorithm with nfft 512 (or the frames per buffer)
 
     while (true)
     {
+        // getting the input buffer from the audio object, contains audio frames of recorded input (microphone)
         vector<float> input_buffer = audio.get_input_buffer();
 
+        // putting the input buffer into the FFT algorithm
         fft.set_input(input_buffer, channel_num);
+
+        // getting the amplitude output from the FFT algorithm
+        vector<float> amplitudes_raw = fft.get_amplitude_output();
+
+        // converting the amplitude values to frequency bins with exponential scale
+        vector<float> amplitudes = to_freq_bins(amplitudes_raw, 200, SAMPLE_RATE);
+        normalise_array(amplitudes); // nomalising the amplitude values so that the maximum value is 1 and minimum is 0
 
         string output;
         std::cout << "\033[H";
 
-        vector<float> amplitudes = fft.get_normalised_amplitude_output();
-
         for (int i = 0; i < amplitudes.size(); i++)
         {
             float amplitude = amplitudes[i];
-
-            printf("%d: %f\n", i, amplitude);
 
             if (amplitude < 0.125)
             {
@@ -291,9 +403,11 @@ int main()
         }
         std::cout << output << std::flush;
 
+        // sleep to reduce CPU usage
         Pa_Sleep(50);
     }
 
+    // calling the destructors of the audio and fft objects
     audio.~audio_data();
     fft.~fft_data();
 
