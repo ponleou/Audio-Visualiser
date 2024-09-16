@@ -11,6 +11,8 @@
                 "./kiss_fft/*",
                 "-l",
                 "portaudio",
+                "-l",
+                "ncurses",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}"
             ],
