@@ -216,17 +216,20 @@ public:
     }
 };
 
+// acts as a outline for the dynamic window data, takes care of the border and padding fo the main dynamic window
 class dynamic_window_outline_data
 {
 protected:
     int outline_height;
     int outline_width;
+    // the outline keeps track of the position (dynamic window will exist inside the outline window)
     int pos_x;
     int pos_y;
+    // padding for the dynamic window
     int padding_x;
     int padding_y;
-    WINDOW *outline_window;
-    bool border;
+    WINDOW *outline_window; // the outline window
+    bool border;            // if true, a border will be drawn around the outline window
 
     dynamic_window_outline_data(int height, int width, int pos_y, int pos_x, int padding_y, int padding_x, bool border)
     {
@@ -251,6 +254,7 @@ protected:
         delwin(outline_window);
     }
 
+    // updates the outline window with the new height and width
     void update_window(int height, int width)
     {
         this->outline_height = height;
@@ -266,6 +270,7 @@ protected:
         wrefresh(outline_window);
     }
 
+    // updates the outline window with the new height, width, position y, and position x
     void update_window(int height, int width, int pos_y, int pos_x)
     {
         this->pos_x = pos_x;
@@ -276,24 +281,30 @@ protected:
     }
 };
 
+// dynamic window data that contains all the contents of the window
+// acts as a dynamic window that is sized and positioned based on the screen size, and adjusts to the screen size
 class dynamic_window_data : private dynamic_window_outline_data
 {
 private:
+    // the maximum height and width of the screen, and also the margin of the screen, used to calculate the ratio of the window
     int max_width;
     int max_height;
     int margin_x;
     int margin_y;
 
+    // the ratio of the height, width, position y, and position x of the window, entered by the user
     double height_ratio;
     double width_ratio;
     double pos_x_ratio;
     double pos_y_ratio;
 
 public:
+    // the current height and width of the window
     int height;
     int width;
+    // the window and its name
     WINDOW *window;
-    string name;
+    string name; // the name is used to identify the window inside the tui_data class's vector of dynamic_window_data
 
     dynamic_window_data(int max_height, int max_width, int margin_y, int margin_x, double height_ratio, double width_ratio, double pos_y_ratio, double pos_x_ratio, int padding_y, int padding_x, bool border, string name = "")
         : dynamic_window_outline_data(0, 0, 0, 0, padding_y, padding_x, border)
@@ -305,27 +316,33 @@ public:
         this->name = name;
         this->margin_x = margin_x;
         this->margin_y = margin_y;
+
+        // set 0,0,0,0 because the position and demensions will be calculated in the update_dynamic_window function
         window = newwin(0, 0, 0, 0);
 
-        update_dynamic_window(max_height, max_width);
+        // passing the max height and width to the update_dynamic_window function to calculate the window size and position
+        update_dynamic_window(this->max_height, this->max_width);
     }
 
     ~dynamic_window_data()
     {
-        dynamic_window_outline_data::~dynamic_window_outline_data();
         delwin(window);
     }
 
+    // updates the window with the new height, width, position y, and position x
     void update_dynamic_window(int max_height, int max_width)
     {
+        // sets the new max height and width
         this->max_width = max_width;
         this->max_height = max_height;
 
+        // calculates the position and demensions of the window based on the ratio of the height, width, position y, and position x
         int pos_y = (int)floor((pos_y_ratio * (double)(max_height - (margin_y * 2))) + margin_y);
         int pos_x = (int)floor((pos_x_ratio * (double)(max_width - (margin_x * 2))) + margin_x);
         int new_height = (int)floor(height_ratio * (double)(max_height - (margin_y * 2)));
         int new_width = (int)floor(width_ratio * (double)(max_width - (margin_x * 2)));
 
+        // updates the outline window with the new height, width, position y, and position x
         dynamic_window_outline_data::update_window(new_height, new_width, pos_y, pos_x);
 
         this->height = new_height - (padding_y * 2);
@@ -333,6 +350,7 @@ public:
 
         wclear(window);
 
+        // sets the position of the window inside the outline window
         mvwin(window, pos_y + padding_y, pos_x + padding_x);
         wresize(window, this->height, this->width);
 
@@ -340,25 +358,28 @@ public:
     }
 };
 
+// tui_data class that contains all the windows and the screen
 class tui_data
 {
 private:
-    int min_x, min_y, max_x, max_y;
+    int min_x, min_y, max_x, max_y; // keeps track of the minimum and maximum x and y coordinates of the screen
+    // the margin of the screen
     int margin_x;
     int margin_y;
+    // the vector of dynamic window data, contains all the dynamic window data on the screen
     vector<dynamic_window_data *> windows;
 
 public:
     tui_data(int margin_y, int margin_x)
     {
-        initscr();
-        curs_set(0);
-        cbreak();
-        noecho();
-        nodelay(stdscr, true);
+        initscr();             // initializes the screen on the terminal
+        curs_set(0);           // hides the cursor
+        cbreak();              // enables ctrl+c to exit the program
+        noecho();              // user input is not displayed on the screen
+        nodelay(stdscr, true); // getch() does not delay the program's sequence (does not wait for user input)
 
-        getbegyx(stdscr, min_y, min_x);
-        getmaxyx(stdscr, max_y, max_x);
+        getbegyx(stdscr, min_y, min_x); // gets the minimum y and x coordinates of the screen
+        getmaxyx(stdscr, max_y, max_x); // gets the maximum y and x coordinates of the screen
 
         this->margin_x = margin_x + min_x;
         this->margin_y = margin_y + min_y;
@@ -373,20 +394,23 @@ public:
         endwin();
     }
 
+    // adds a dynamic window to the vector of dynamic window data
     void add_dynamic_window(double height_ratio, double width_ratio, double pos_y_ratio, double pos_x_ratio, int padding_y, int padding_x, bool border, string name = "")
     {
         dynamic_window_data *new_window = new dynamic_window_data(max_y, max_x, margin_y, margin_x, height_ratio, width_ratio, pos_y_ratio, pos_x_ratio, padding_y, padding_x, border, name);
         windows.push_back(new_window);
     }
 
+    // gets the dynamic window using the index
     const dynamic_window_data *get_window(int index) const
     {
         return windows[index];
     }
 
+    // gets the dynamic window using the name
     const dynamic_window_data *get_window(string name) const
     {
-
+        // return null if the name is empty
         if (name == "")
         {
             return nullptr;
@@ -400,9 +424,11 @@ public:
             }
         }
 
+        // return null if the name is not found
         return nullptr;
     }
 
+    // updates the screen and all the dynamic windows
     void update()
     {
         getbegyx(stdscr, min_y, min_x);
@@ -565,123 +591,178 @@ void set_labeled_bins(vector<int> &labeled_bins, int num_bins, int scr_size)
     }
 }
 
+vector<float> to_audio_waves(vector<float> audio_frames, int num_bins)
+{
+    vector<float> audio_waves;
+
+    int frames_per_bin = (int)floor((double)audio_frames.size() / (double)num_bins);
+
+    if (frames_per_bin < 1)
+    {
+        frames_per_bin = 1;
+    }
+
+    for (int i = 0; i < num_bins; i++)
+    {
+        float sum = 0.0f;
+
+        for (int j = 0; j < frames_per_bin; j++)
+        {
+            sum += audio_frames[(i * frames_per_bin) + j];
+        }
+
+        float avg = sum / (float)frames_per_bin;
+
+        audio_waves.push_back(avg);
+    }
+
+    return audio_waves;
+}
+
 int main()
 {
     // number of channels to record (2 is stereo, 1 is mono)
     int channel_num = 2;
+    bool frequency_visual = true;
+    bool waveform_visual = false;
 
     audio_data audio(channel_num, SAMPLE_RATE, FRAMES_PER_BUFFER); // Initialize audio data
     fft_data fft(FRAMES_PER_BUFFER);                               // Initialize FFT
 
-    // initscr();             // Initialize ncurses for terminal UI
-    // curs_set(0);           // Hide the cursor
-    // cbreak();              // ctrl c to exit
-    // noecho();              // Disable echoing of input
-    // nodelay(stdscr, true); // Make getch() non-blocking, or no delay to wait for input
-
     tui_data tui(1, 1);
+    tui.add_dynamic_window(0.2, 0.4, 0.0, 0.0, 1, 1, true, "type");
+    tui.add_dynamic_window(0.2, 0.6, 0.0, 0.4, 1, 1, true, "menu");
     tui.add_dynamic_window(0.8, 1.0, 0.2, 0.0, 1, 1, true, "visualizer");
-    tui.add_dynamic_window(0.2, 1.0, 0.0, 0.0, 1, 1, true, "menu");
     const dynamic_window_data *visualizer = tui.get_window("visualizer");
+    const dynamic_window_data *type = tui.get_window("type");
     const dynamic_window_data *menu = tui.get_window("menu");
-
-    // int min_x, min_y, max_x, max_y;
-
-    // getbegyx(stdscr, min_y, min_x); // Get the beginning y and x coordinates of the screen
-    // getmaxyx(stdscr, max_y, max_x); // Get the maximum y and x coordinates of the screen
-
-    // int scr_win_margin_x = 1 + min_x; // margin between screen and window horizontal direction (left and right)
-    // int scr_win_margin_y = 3 + min_y; // margin between screen and window vertical direction (top and bottom), -2 to make space at the top
-    // int window_height = max_y - scr_win_margin_y;
-    // int window_width = max_x - scr_win_margin_x;
-
-    // WINDOW *visual_window = newwin(window_height, window_width, scr_win_margin_y, scr_win_margin_x); // Create a window for the visualizer
-
-    // // the margin for the box around the window and 1 space gap
-    // int window_margin = 2;
 
     while (true)
     {
         tui.update();
 
+        string quit_text = "[q] to quit";
+        string switch_text = "[r] to Switch Visuals";
         mvwprintw(menu->window, menu->height / 2, 0, "[q] to Quit");
-
-        // getbegyx(stdscr, min_y, min_x); // Get the beginning y and x coordinates of the screen
-        // getmaxyx(stdscr, max_y, max_x); // Get the maximum y and x coordinates of the screen
-
-        // scr_win_margin_x = 1 + min_x; // margin between screen and window horizontal direction (left and right)
-        // scr_win_margin_y = 3 + min_y; // margin between screen and window vertical direction (top and bottom), -2 to make space at the top
-        // window_height = max_y - scr_win_margin_y;
-        // window_width = max_x - scr_win_margin_x;
-
-        // mvwin(visual_window, scr_win_margin_y, scr_win_margin_x); // Move the visualizer window to the new position
-        // wresize(visual_window, window_height, window_width);      // Resize the visualizer window
-
-        // wclear(visual_window);    // Clear the visualizer window
-        // box(visual_window, 0, 0); // Draw a box around the visualizer window
+        mvwprintw(menu->window, menu->height / 2, quit_text.length() + 2, "[r] to Switch Visuals");
+        mvwprintw(type->window, 0, 0, "Frequency Visualiser");
+        mvwprintw(type->window, 1, 0, "Waveform Visualiser");
 
         // Get input buffer from audio
-        vector<float>
-            input_buffer = audio.get_input_buffer();
+        vector<float> input_buffer = audio.get_input_buffer();
 
-        // Set input for FFT and get amplitude output
-        fft.set_input(input_buffer, channel_num);
-        vector<float> amplitudes_raw = fft.get_amplitude_output();
+        int num_bins = visualizer->width; // Number of bins for the visualizer
 
-        // int num_bins = window_width - (window_margin * 2); // Number of frequency bins to display
-        int num_bins = visualizer->width;
-
-        // Convert amplitude values to frequency bins with exponential scale
-        vector<float> frequency_bins = to_freq_bins(amplitudes_raw, num_bins, SAMPLE_RATE); // Adjust the number of bins as needed
-        normalise_array(frequency_bins);                                                    // Normalize amplitudes
-
-        vector<int> label_bins;
-        set_labeled_bins(label_bins, frequency_bins.size(), num_bins);
-
-        // Draw visualizer bars
-        for (int i = 0; i < frequency_bins.size(); i++)
+        if (waveform_visual)
         {
-            mvwprintw(visualizer->window, visualizer->height - 2, i, "=");
-            // Print line under the bars, on the second last time from the margin (window_margin + 2), leaving a space at the bottom
+            vector<float> audio_waves = to_audio_waves(input_buffer, num_bins);
 
-            int height = (int)(frequency_bins[i] * (float)(visualizer->height - 2));
+            normalise_array(audio_waves);
 
-            // drawing from top to bottom
-            for (int j = 0; j < height; j++)
+            for (int i = 0; i < visualizer->width; i++)
             {
-                // max_height is the bottom coordinate of the window, max_height - height is the top coordinate of the window for the bars
-                mvwprintw(visualizer->window, visualizer->height - 3 - j, i, "#"); // Print visualizer bars at position (row, column)
+                int mid_height = (int)floor((double)(visualizer->height - 1) / 2.0);
+
+                if (audio_waves.size() > i)
+                {
+                    int height = (int)floor((double)mid_height * audio_waves[i]);
+                    int next_height = 0;
+                    if (i + 1 < audio_waves.size())
+                    {
+                        next_height = (int)floor((double)mid_height * audio_waves[i + 1]);
+                    }
+                    else
+                    {
+                        next_height = -(int)floor((double)mid_height * audio_waves[i - 1]);
+                    }
+                    // mvwprintw(visualizer->window, mid_height - height, i, "|");
+
+                    if (next_height > height)
+                    {
+                        mvwprintw(visualizer->window, mid_height - height, i, "/");
+                    }
+
+                    if (next_height < height)
+                    {
+                        mvwprintw(visualizer->window, mid_height - height, i, "\\");
+                    }
+
+                    if (next_height == height)
+                    {
+                        mvwprintw(visualizer->window, mid_height - height, i, "-");
+                    }
+
+                    mvwprintw(visualizer->window, mid_height, i, "=");
+                }
             }
         }
 
-        for (int i = 0; i < label_bins.size(); i++)
+        if (frequency_visual)
         {
-            int freq = (int)exponential_freq_width(SAMPLE_RATE / 2, SAMPLE_RATE / (2 * FRAMES_PER_BUFFER), num_bins, label_bins[i]);
+            // Set input for FFT and get amplitude output
+            fft.set_input(input_buffer, channel_num);
+            vector<float> amplitudes_raw = fft.get_amplitude_output();
 
-            int pos_x = label_bins[i];
-            int pos_y = visualizer->height - 1;
+            // Convert amplitude values to frequency bins with exponential scale
+            vector<float> frequency_bins = to_freq_bins(amplitudes_raw, num_bins, SAMPLE_RATE); // Adjust the number of bins as needed
+            normalise_array(frequency_bins);                                                    // Normalize amplitudes
 
-            int max_text_width = 3;
+            vector<int> label_bins;
+            set_labeled_bins(label_bins, frequency_bins.size(), num_bins);
 
-            if (pos_x + max_text_width > visualizer->width)
+            // Draw visualizer bars
+            for (int i = 0; i < frequency_bins.size(); i++)
             {
-                pos_x = visualizer->width - max_text_width;
+                mvwprintw(visualizer->window, visualizer->height - 2, i, "=");
+                // Print line under the bars, on the second last time from the margin (window_margin + 2), leaving a space at the bottom
+
+                int height = (int)(frequency_bins[i] * (float)(visualizer->height - 2));
+
+                // drawing from top to bottom
+                for (int j = 0; j < height; j++)
+                {
+                    // max_height is the bottom coordinate of the window, max_height - height is the top coordinate of the window for the bars
+                    mvwprintw(visualizer->window, visualizer->height - 3 - j, i, "#"); // Print visualizer bars at position (row, column)
+                }
             }
 
-            if (freq < 1000)
-                mvwprintw(visualizer->window, pos_y, pos_x, "%d", freq);
-            else
-                mvwprintw(visualizer->window, pos_y, pos_x, "%dk", (freq / 1000));
+            for (int i = 0; i < label_bins.size(); i++)
+            {
+                int freq = (int)exponential_freq_width(SAMPLE_RATE / 2, SAMPLE_RATE / (2 * FRAMES_PER_BUFFER), num_bins, label_bins[i]);
+
+                int pos_x = label_bins[i];
+                int pos_y = visualizer->height - 1;
+
+                int max_text_width = 3;
+
+                if (pos_x + max_text_width > visualizer->width)
+                {
+                    pos_x = visualizer->width - max_text_width;
+                }
+
+                if (freq < 1000)
+                    mvwprintw(visualizer->window, pos_y, pos_x, "%d", freq);
+                else
+                    mvwprintw(visualizer->window, pos_y, pos_x, "%dk", (freq / 1000));
+            }
         }
 
         wrefresh(visualizer->window); // Refresh the screen to show the updated visuals
         wrefresh(menu->window);
 
-        // port audio sleep to collect audio frames
         Pa_Sleep(50);
+        // port audio sleep to collect audio frames
+
+        char key = getch();
+
+        if (key == 'r')
+        {
+            frequency_visual = !frequency_visual;
+            waveform_visual = !waveform_visual;
+        }
 
         // Check if a key is pressed to exit the loop
-        if (getch() == 'q')
+        if (key == 'q')
             break;
     }
 
