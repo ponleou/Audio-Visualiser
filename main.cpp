@@ -25,7 +25,7 @@ private:
     int frames_per_buffer;
 
     // checks if there is an error in the portaudio library initialization or other processes
-    void check_error(PaError err) const
+    static void check_error(PaError err)
     {
         if (err != paNoError) // paNoError is a value of the PaError object that means there is no error
         {
@@ -78,28 +78,6 @@ public:
         input_buffer.resize(frames_per_buffer * channel_num); // resizing the input buffer to the size of the frames per buffer and the number of channels
     }
 
-    audio_data(int channel_num, int sample_rate, int frames_per_buffer)
-    {
-        this->sample_rate = sample_rate;
-        this->frames_per_buffer = frames_per_buffer;
-
-        err = Pa_Initialize(); // Pa_Initialize() initializes the portaudio library, it returns a PaError object
-        // if the initialization is successful, it returns paNoError value of the object
-        // if the initialization is unsuccessful, it returns an error value
-        check_error(err);
-
-        print_device_info();
-
-        int device_num;
-
-        std::cout << "Enter device number: ";
-        std::cin >> device_num;
-
-        start_stream(device_num, channel_num);
-
-        input_buffer.resize(frames_per_buffer * channel_num); // resizing the input buffer to the size of the frames per buffer and the number of channels
-    }
-
     // destructor
     ~audio_data()
     {
@@ -115,8 +93,10 @@ public:
     }
 
     // prints the device information into the terminal
-    void print_device_info() const
+    static void print_device_info()
     {
+        PaError err = Pa_Initialize();
+        check_error(err);
 
         int num_devices = Pa_GetDeviceCount(); // Pa_GetDeviceCount() returns the number of devices found
         // it returns -1 if there is an error
@@ -145,6 +125,9 @@ public:
             printf("Default sample rate: %f\n", device_info->defaultSampleRate);
             printf(" \n");
         }
+
+        err = Pa_Terminate();
+        check_error(err);
     }
 
     // returns the input buffer, which is the waveform data of microphone input audio frames
@@ -230,8 +213,9 @@ protected:
     int padding_y;
     WINDOW *outline_window; // the outline window
     bool border;            // if true, a border will be drawn around the outline window
+    string border_text;
 
-    dynamic_window_outline_data(int height, int width, int pos_y, int pos_x, int padding_y, int padding_x, bool border)
+    dynamic_window_outline_data(int height, int width, int pos_y, int pos_x, int padding_y, int padding_x, bool border, string border_text = "")
     {
         this->outline_height = height;
         this->outline_width = width;
@@ -240,12 +224,24 @@ protected:
         this->pos_x = pos_x;
         this->pos_y = pos_y;
         this->outline_window = newwin(height, width, pos_y, pos_x);
+        this->border_text = border_text;
+
+        if (this->outline_window == nullptr)
+        {
+            exit(1);
+        }
+
         this->border = border;
         if (this->border)
         {
             box(outline_window, 0, 0);
             this->padding_x++;
             this->padding_y++;
+
+            // border text
+            wattr_on(outline_window, A_BOLD, nullptr);
+            mvwprintw(outline_window, 0, padding_x, this->border_text.c_str());
+            wattr_off(outline_window, A_BOLD, nullptr);
         }
     }
 
@@ -261,7 +257,7 @@ protected:
         this->outline_width = width;
         wclear(outline_window);
 
-        wresize(outline_window, height, width);
+        wresize(outline_window, this->outline_height, this->outline_width);
         if (this->border)
         {
             box(outline_window, 0, 0);
@@ -275,9 +271,25 @@ protected:
     {
         this->pos_x = pos_x;
         this->pos_y = pos_y;
+        this->outline_height = height;
+        this->outline_width = width;
+
+        wclear(outline_window);
 
         mvwin(outline_window, pos_y, pos_x);
-        update_window(height, width);
+        wresize(outline_window, this->outline_height, this->outline_width);
+        if (this->border)
+        {
+            box(outline_window, 0, 0);
+
+            // border text
+            wattr_on(outline_window, A_BOLD, nullptr);
+            mvwprintw(outline_window, 0, padding_x, this->border_text.c_str());
+            wattr_off(outline_window, A_BOLD, nullptr);
+        }
+
+        wrefresh(outline_window);
+        // update_window(height, width);
     }
 };
 
@@ -306,7 +318,7 @@ public:
     WINDOW *window;
     string name; // the name is used to identify the window inside the tui_data class's vector of dynamic_window_data
 
-    dynamic_window_data(int max_height, int max_width, int margin_y, int margin_x, double height_ratio, double width_ratio, double pos_y_ratio, double pos_x_ratio, int padding_y, int padding_x, bool border, string name = "")
+    dynamic_window_data(int max_height, int max_width, int margin_y, int margin_x, double height_ratio, double width_ratio, double pos_y_ratio, double pos_x_ratio, int padding_y, int padding_x, bool border, string name = "", bool show_name = false)
         : dynamic_window_outline_data(0, 0, 0, 0, padding_y, padding_x, border)
     {
         this->height_ratio = height_ratio;
@@ -317,11 +329,21 @@ public:
         this->margin_x = margin_x;
         this->margin_y = margin_y;
 
+        if (show_name)
+        {
+            this->border_text = this->name;
+        }
+
         // set 0,0,0,0 because the position and demensions will be calculated in the update_dynamic_window function
-        window = newwin(0, 0, 0, 0);
+        window = newwin(1, 1, 0, 0);
+
+        if (window == nullptr)
+        {
+            exit(1);
+        }
 
         // passing the max height and width to the update_dynamic_window function to calculate the window size and position
-        update_dynamic_window(this->max_height, this->max_width);
+        update_dynamic_window(max_height, max_width);
     }
 
     ~dynamic_window_data()
@@ -395,9 +417,9 @@ public:
     }
 
     // adds a dynamic window to the vector of dynamic window data
-    void add_dynamic_window(double height_ratio, double width_ratio, double pos_y_ratio, double pos_x_ratio, int padding_y, int padding_x, bool border, string name = "")
+    void add_dynamic_window(double height_ratio, double width_ratio, double pos_y_ratio, double pos_x_ratio, int padding_y, int padding_x, bool border, string name = "", bool show_name = false)
     {
-        dynamic_window_data *new_window = new dynamic_window_data(max_y, max_x, margin_y, margin_x, height_ratio, width_ratio, pos_y_ratio, pos_x_ratio, padding_y, padding_x, border, name);
+        dynamic_window_data *new_window = new dynamic_window_data(max_y, max_x, margin_y, margin_x, height_ratio, width_ratio, pos_y_ratio, pos_x_ratio, padding_y, padding_x, border, name, show_name);
         windows.push_back(new_window);
     }
 
@@ -623,30 +645,107 @@ int main()
 {
     // number of channels to record (2 is stereo, 1 is mono)
     int channel_num = 2;
+    int sleep_time = 50;
     bool frequency_visual = true;
     bool waveform_visual = false;
 
-    audio_data audio(channel_num, SAMPLE_RATE, FRAMES_PER_BUFFER); // Initialize audio data
-    fft_data fft(FRAMES_PER_BUFFER);                               // Initialize FFT
+    int device_num;
+    audio_data::print_device_info();
 
+    std::cout << "Enter device number: ";
+    std::cin >> device_num;
+
+    audio_data audio(device_num, channel_num, SAMPLE_RATE, FRAMES_PER_BUFFER); // Initialize audio data
+    fft_data fft(FRAMES_PER_BUFFER);                                           // Initialize FFT
     tui_data tui(1, 1);
-    tui.add_dynamic_window(0.2, 0.4, 0.0, 0.0, 1, 1, true, "type");
-    tui.add_dynamic_window(0.2, 0.6, 0.0, 0.4, 1, 1, true, "menu");
-    tui.add_dynamic_window(0.8, 1.0, 0.2, 0.0, 1, 1, true, "visualizer");
-    const dynamic_window_data *visualizer = tui.get_window("visualizer");
-    const dynamic_window_data *type = tui.get_window("type");
-    const dynamic_window_data *menu = tui.get_window("menu");
+
+    tui.add_dynamic_window(0.2, 0.2, 0.0, 0.0, 0, 2, true, "Visualiser Type", true);
+    tui.add_dynamic_window(0.2, 0.8, 0.0, 0.2, 0, 2, true, "Menu", true);
+    tui.add_dynamic_window(0.8, 1.0, 0.2, 0.0, 1, 1, true, "Visualizer", true);
+    const dynamic_window_data *type_v = tui.get_window(0);
+    const dynamic_window_data *menu = tui.get_window(1);
+    const dynamic_window_data *visualizer = tui.get_window(2);
+
+    if (has_colors())
+    {
+        start_color();
+        init_pair(1, COLOR_BLACK, COLOR_GREEN);
+        init_pair(2, COLOR_GREEN, COLOR_BLACK);
+    }
 
     while (true)
     {
+        if (sleep_time < 0)
+        {
+            sleep_time = 0;
+        }
+
+        if (sleep_time > 150)
+        {
+            sleep_time = 150;
+        }
+
         tui.update();
 
-        string quit_text = "[q] to quit";
-        string switch_text = "[r] to Switch Visuals";
-        mvwprintw(menu->window, menu->height / 2, 0, "[q] to Quit");
-        mvwprintw(menu->window, menu->height / 2, quit_text.length() + 2, "[r] to Switch Visuals");
-        mvwprintw(type->window, 0, 0, "Frequency Visualiser");
-        mvwprintw(type->window, 1, 0, "Waveform Visualiser");
+        string quit_control_text = "[q]";
+        string quit_text = "Quit";
+
+        string switch_control_text = "[TAB]";
+        string switch_text = "Switch Visuals";
+
+        string refresh_control_text = "[+/-]";
+        string refresh_text = "Refresh Time: " + std::to_string(sleep_time) + " ms";
+
+        if (has_colors())
+            wattr_on(menu->window, COLOR_PAIR(2), nullptr);
+        mvwprintw(menu->window, (menu->height - 1) / 2, 0, switch_control_text.c_str());
+        wattr_off(menu->window, COLOR_PAIR(2), nullptr);
+
+        mvwprintw(menu->window, (menu->height - 1) / 2, switch_control_text.length(), (" " + switch_text).c_str());
+
+        int switch_text_length = switch_text.length() + switch_control_text.length() + 1;
+
+        if (has_colors())
+            wattr_on(menu->window, COLOR_PAIR(2), nullptr);
+        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3, quit_control_text.c_str());
+        wattr_off(menu->window, COLOR_PAIR(2), nullptr);
+
+        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_control_text.length(), (" " + quit_text).c_str());
+
+        int quit_text_length = quit_control_text.length() + quit_text.length() + 1;
+
+        if (has_colors())
+            wattr_on(menu->window, COLOR_PAIR(2), nullptr);
+        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_text_length + 3, refresh_control_text.c_str());
+        wattr_off(menu->window, COLOR_PAIR(2), nullptr);
+
+        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_text_length + 3 + refresh_control_text.length(), (" " + refresh_text).c_str());
+
+        if (frequency_visual)
+        {
+            if (has_colors())
+                wattr_on(type_v->window, COLOR_PAIR(1), nullptr);
+            else
+                wattr_on(type_v->window, A_STANDOUT, nullptr);
+        }
+
+        mvwprintw(type_v->window, type_v->height / 3 - 1, 0, "Frequency Visualiser");
+
+        wattr_off(type_v->window, A_STANDOUT, nullptr);
+        wattr_off(type_v->window, COLOR_PAIR(1), nullptr);
+
+        if (waveform_visual)
+        {
+            if (has_colors())
+                wattr_on(type_v->window, COLOR_PAIR(1), nullptr);
+            else
+                wattr_on(type_v->window, A_STANDOUT, nullptr);
+        }
+
+        mvwprintw(type_v->window, type_v->height / 3 * 2, 0, "Waveform Visualiser");
+
+        wattr_off(type_v->window, A_STANDOUT, nullptr);
+        wattr_off(type_v->window, COLOR_PAIR(1), nullptr);
 
         // Get input buffer from audio
         vector<float> input_buffer = audio.get_input_buffer();
@@ -675,7 +774,6 @@ int main()
                     {
                         next_height = -(int)floor((double)mid_height * audio_waves[i - 1]);
                     }
-                    // mvwprintw(visualizer->window, mid_height - height, i, "|");
 
                     if (next_height > height)
                     {
@@ -749,16 +847,26 @@ int main()
 
         wrefresh(visualizer->window); // Refresh the screen to show the updated visuals
         wrefresh(menu->window);
+        wrefresh(type_v->window);
 
-        Pa_Sleep(50);
-        // port audio sleep to collect audio frames
+        Pa_Sleep(sleep_time); // sleep to return cpu usage
 
         char key = getch();
+        // keypad(stdscr, true);
 
-        if (key == 'r')
+        if (key == 9) // 9 is TAB in characters
         {
             frequency_visual = !frequency_visual;
             waveform_visual = !waveform_visual;
+        }
+
+        if (key == '+')
+        {
+            sleep_time++;
+        }
+        if (key == '-')
+        {
+            sleep_time--;
         }
 
         // Check if a key is pressed to exit the loop
