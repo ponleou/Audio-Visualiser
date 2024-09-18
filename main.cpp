@@ -1,4 +1,4 @@
-#include "portaudio.h"
+#include <portaudio.h>
 #include "kiss_fft/kiss_fftr.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,12 +6,10 @@
 #include <iostream>
 #include <cmath>
 #include <ncurses.h>
+#include <sndfile.h>
 
 using std::string;
 using std::vector;
-
-const int SAMPLE_RATE = 44100;      // sample rate, the number of samples per second
-const int FRAMES_PER_BUFFER = 1024; // frames per buffer, the number of samples per buffer
 
 class audio_data
 {
@@ -25,6 +23,7 @@ private:
     int frames_per_buffer;
 
     // checks if there is an error in the portaudio library initialization or other processes
+    // static because it is a utility function that is not dependent on the object, also another static method is also accessing it
     static void check_error(PaError err)
     {
         if (err != paNoError) // paNoError is a value of the PaError object that means there is no error
@@ -35,6 +34,7 @@ private:
         }
     }
 
+    // starts the stream with the input and output parameters
     void start_stream(int device_num, int channel_num)
     {
         // input parameter
@@ -93,6 +93,7 @@ public:
     }
 
     // prints the device information into the terminal
+    // a static method so that it could be called before the object is created
     static void print_device_info()
     {
         PaError err = Pa_Initialize();
@@ -213,7 +214,7 @@ protected:
     int padding_y;
     WINDOW *outline_window; // the outline window
     bool border;            // if true, a border will be drawn around the outline window
-    string border_text;
+    string border_text;     // the text that will be displayed on the border (like a name or heading)
 
     dynamic_window_outline_data(int height, int width, int pos_y, int pos_x, int padding_y, int padding_x, bool border, string border_text = "")
     {
@@ -226,6 +227,7 @@ protected:
         this->outline_window = newwin(height, width, pos_y, pos_x);
         this->border_text = border_text;
 
+        // making sure newwin is successful
         if (this->outline_window == nullptr)
         {
             exit(1);
@@ -329,6 +331,7 @@ public:
         this->margin_x = margin_x;
         this->margin_y = margin_y;
 
+        // if show name is true, the border text will be the name of the window
         if (show_name)
         {
             this->border_text = this->name;
@@ -337,6 +340,7 @@ public:
         // set 0,0,0,0 because the position and demensions will be calculated in the update_dynamic_window function
         window = newwin(1, 1, 0, 0);
 
+        // making sure newwin is successful
         if (window == nullptr)
         {
             exit(1);
@@ -471,6 +475,87 @@ public:
     }
 };
 
+class audio_file_data
+{
+private:
+    SF_INFO audio_info;
+    SNDFILE *audio_file;
+    float *output_frames;
+    int frames_per_buffer;
+    sf_count_t current_frame;
+    string file_path;
+    vector<float> output_vector;
+
+public:
+    audio_file_data(int frames_per_buffer)
+    {
+        this->frames_per_buffer = frames_per_buffer;
+        current_frame = 0;
+        audio_file = nullptr;
+        output_frames = nullptr;
+        file_path = "";
+    }
+
+    ~audio_file_data()
+    {
+        if (audio_file != nullptr)
+        {
+            sf_close(audio_file);
+        }
+        if (output_frames != nullptr)
+        {
+            free(output_frames);
+        }
+    }
+
+    void read_file(string file_path)
+    {
+        if (file_path != this->file_path)
+        {
+            if (audio_file != nullptr)
+            {
+                sf_close(audio_file);
+            }
+
+            this->file_path = file_path;
+            audio_file = sf_open(file_path.c_str(), SFM_READ, &audio_info);
+            current_frame = 0;
+
+            if (audio_file != nullptr && audio_info.seekable)
+            {
+                if (output_frames != nullptr)
+                {
+                    free(output_frames);
+                }
+
+                output_frames = (float *)malloc(sizeof(float) * frames_per_buffer * audio_info.channels);
+            }
+        }
+
+        if (audio_file != nullptr)
+        {
+            sf_count_t seeked = sf_seek(audio_file, current_frame, SEEK_SET);
+            output_vector.clear();
+
+            if (seeked > -1)
+            {
+                sf_readf_float(audio_file, output_frames, frames_per_buffer);
+                current_frame += frames_per_buffer;
+
+                for (int i = 0; i < frames_per_buffer * audio_info.channels; i++)
+                {
+                    output_vector.push_back(output_frames[i]);
+                }
+            }
+        }
+    }
+
+    vector<float> get_output_frames()
+    {
+        return output_vector;
+    }
+};
+
 // normalises all the values in the array so that the maximum value is 1 and minimum is 0
 void normalise_array(vector<float> &array)
 {
@@ -594,6 +679,7 @@ vector<float> to_freq_bins(vector<float> amplitudes, int num_bins, int sample_ra
     return freq_bins;
 }
 
+// determining which bins are labeled
 void set_labeled_bins(vector<int> &labeled_bins, int num_bins, int scr_size)
 {
     // the first and last bins are always labeled
@@ -613,6 +699,8 @@ void set_labeled_bins(vector<int> &labeled_bins, int num_bins, int scr_size)
     }
 }
 
+// fixing the audio frames data to be usable for visualisation
+// the only thing it is doing is reducing the number of audio frames in the array to the number of bins by finding the average of the audio frames
 vector<float> to_audio_waves(vector<float> audio_frames, int num_bins)
 {
     vector<float> audio_waves;
@@ -641,31 +729,54 @@ vector<float> to_audio_waves(vector<float> audio_frames, int num_bins)
     return audio_waves;
 }
 
+vector<float> extract_single_channel(vector<float> audio_frames, int channel_num)
+{
+    if (channel_num == 1)
+    {
+        return audio_frames;
+    }
+
+    vector<float> single_channel_frames;
+
+    for (int i = 0; i < audio_frames.size(); i += channel_num)
+    {
+        single_channel_frames.push_back(audio_frames[i]);
+    }
+
+    return single_channel_frames;
+}
+
 int main()
 {
-    // number of channels to record (2 is stereo, 1 is mono)
-    int channel_num = 2;
-    int sleep_time = 50;
-    bool frequency_visual = true;
-    bool waveform_visual = false;
+    const int SAMPLE_RATE = 44100;      // sample rate, the number of samples per second
+    const int FRAMES_PER_BUFFER = 1024; // frames per buffer, the number of samples per buffer
+    const int CHANNEL_NUM = 2;          // number of channels to record (2 is stereo, 1 is mono)
 
-    int device_num;
+    int sleep_time = 50;          // time to sleep in milliseconds before each run of the loop
+    bool frequency_visual = true; // toggle for frequency visualiser
+    bool waveform_visual = false; // toggle for waveform visualiser
+
+    int device_num; // the number of the device to use
     audio_data::print_device_info();
-
     std::cout << "Enter device number: ";
     std::cin >> device_num;
 
-    audio_data audio(device_num, channel_num, SAMPLE_RATE, FRAMES_PER_BUFFER); // Initialize audio data
+    audio_data audio(device_num, CHANNEL_NUM, SAMPLE_RATE, FRAMES_PER_BUFFER); // Initialize audio data
     fft_data fft(FRAMES_PER_BUFFER);                                           // Initialize FFT
-    tui_data tui(1, 1);
+    tui_data tui(1, 1);                                                        // Initialize TUI with ncurses
+    audio_file_data audio_file(FRAMES_PER_BUFFER);                             // Initialize audio file data
 
+    // creating the dynamic windows for the TUI
     tui.add_dynamic_window(0.2, 0.2, 0.0, 0.0, 0, 2, true, "Visualiser Type", true);
     tui.add_dynamic_window(0.2, 0.8, 0.0, 0.2, 0, 2, true, "Menu", true);
-    tui.add_dynamic_window(0.8, 1.0, 0.2, 0.0, 1, 1, true, "Visualizer", true);
+    tui.add_dynamic_window(0.8, 1.0, 0.2, 0.0, 1, 1, true, "Visualiser", true);
+
+    // accessing each dynamic window object with its index
     const dynamic_window_data *type_v = tui.get_window(0);
     const dynamic_window_data *menu = tui.get_window(1);
     const dynamic_window_data *visualizer = tui.get_window(2);
 
+    // if the terminal supports colors, set the colors for the visualiser
     if (has_colors())
     {
         start_color();
@@ -675,52 +786,39 @@ int main()
 
     while (true)
     {
-        if (sleep_time < 0)
-        {
-            sleep_time = 0;
-        }
-
-        if (sleep_time > 150)
-        {
-            sleep_time = 150;
-        }
-
         tui.update();
 
+        // text for the menu section
         string quit_control_text = "[q]";
-        string quit_text = "Quit";
+        string quit_text = " Quit";
 
         string switch_control_text = "[TAB]";
-        string switch_text = "Switch Visuals";
+        string switch_text = " Switch Visuals";
 
         string refresh_control_text = "[+/-]";
-        string refresh_text = "Refresh Time: " + std::to_string(sleep_time) + " ms";
+        string refresh_text = " Refresh Time: " + std::to_string(sleep_time) + " ms";
 
+        int switch_text_length = switch_text.length() + switch_control_text.length();
+        int quit_text_length = quit_control_text.length() + quit_text.length();
+        int refresh_text_length = refresh_control_text.length() + refresh_text.length();
+
+        // printing the control text (it has colors if the terminal supports colors)
         if (has_colors())
             wattr_on(menu->window, COLOR_PAIR(2), nullptr);
+
         mvwprintw(menu->window, (menu->height - 1) / 2, 0, switch_control_text.c_str());
-        wattr_off(menu->window, COLOR_PAIR(2), nullptr);
-
-        mvwprintw(menu->window, (menu->height - 1) / 2, switch_control_text.length(), (" " + switch_text).c_str());
-
-        int switch_text_length = switch_text.length() + switch_control_text.length() + 1;
-
-        if (has_colors())
-            wattr_on(menu->window, COLOR_PAIR(2), nullptr);
         mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3, quit_control_text.c_str());
-        wattr_off(menu->window, COLOR_PAIR(2), nullptr);
-
-        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_control_text.length(), (" " + quit_text).c_str());
-
-        int quit_text_length = quit_control_text.length() + quit_text.length() + 1;
-
-        if (has_colors())
-            wattr_on(menu->window, COLOR_PAIR(2), nullptr);
         mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_text_length + 3, refresh_control_text.c_str());
+
         wattr_off(menu->window, COLOR_PAIR(2), nullptr);
 
-        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_text_length + 3 + refresh_control_text.length(), (" " + refresh_text).c_str());
+        // printing the menu text (without colors)
+        mvwprintw(menu->window, (menu->height - 1) / 2, switch_control_text.length(), switch_text.c_str());
+        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_control_text.length(), quit_text.c_str());
+        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_text_length + 3 + refresh_control_text.length(), refresh_text.c_str());
 
+        // text for the visualiser type section
+        // the current visualiser type is highlighted (with colours if supported)
         if (frequency_visual)
         {
             if (has_colors())
@@ -748,20 +846,34 @@ int main()
         wattr_off(type_v->window, COLOR_PAIR(1), nullptr);
 
         // Get input buffer from audio
-        vector<float> input_buffer = audio.get_input_buffer();
+        audio_file.read_file("./ignore/walpurgis.mp3");
+        vector<float> input_buffer = audio_file.get_output_frames();
+
+        if (input_buffer.size() == 0)
+        {
+            input_buffer = audio.get_input_buffer();
+        }
+        else
+        {
+            audio.set_output_buffer(input_buffer); // Set output buffer to play sound
+        }
 
         int num_bins = visualizer->width; // Number of bins for the visualizer
 
         if (waveform_visual)
         {
+            input_buffer = extract_single_channel(input_buffer, CHANNEL_NUM);
+            // converting the audio frames from the input buffer to work as audio waves for the visualiser
             vector<float> audio_waves = to_audio_waves(input_buffer, num_bins);
 
-            normalise_array(audio_waves);
+            normalise_array(audio_waves); // Normalize the audio waves
 
             for (int i = 0; i < visualizer->width; i++)
             {
+                // when the audio wave's value is 0, it will be drawn in the middle of the window
                 int mid_height = (int)floor((double)(visualizer->height - 1) / 2.0);
 
+                // drawing the audio waves as displacement from the center/middle of the window
                 if (audio_waves.size() > i)
                 {
                     int height = (int)floor((double)mid_height * audio_waves[i]);
@@ -775,21 +887,25 @@ int main()
                         next_height = -(int)floor((double)mid_height * audio_waves[i - 1]);
                     }
 
+                    // if the current height's gradient is positive, it will be drawn with a upward slope (/)
                     if (next_height > height)
                     {
                         mvwprintw(visualizer->window, mid_height - height, i, "/");
                     }
 
+                    // if the current height's gradient is negative, it will be drawn with a downward slope (\)
                     if (next_height < height)
                     {
                         mvwprintw(visualizer->window, mid_height - height, i, "\\");
                     }
 
+                    // if the current height's gradient is zero, it will be drawn with a horizontal line (-)
                     if (next_height == height)
                     {
                         mvwprintw(visualizer->window, mid_height - height, i, "-");
                     }
 
+                    // drawing the line of 0 displacement
                     mvwprintw(visualizer->window, mid_height, i, "=");
                 }
             }
@@ -798,13 +914,14 @@ int main()
         if (frequency_visual)
         {
             // Set input for FFT and get amplitude output
-            fft.set_input(input_buffer, channel_num);
+            fft.set_input(input_buffer, CHANNEL_NUM);
             vector<float> amplitudes_raw = fft.get_amplitude_output();
 
             // Convert amplitude values to frequency bins with exponential scale
             vector<float> frequency_bins = to_freq_bins(amplitudes_raw, num_bins, SAMPLE_RATE); // Adjust the number of bins as needed
             normalise_array(frequency_bins);                                                    // Normalize amplitudes
 
+            // getting the specific bins that will be labeled
             vector<int> label_bins;
             set_labeled_bins(label_bins, frequency_bins.size(), num_bins);
 
@@ -824,8 +941,10 @@ int main()
                 }
             }
 
+            // section for the frequency labels
             for (int i = 0; i < label_bins.size(); i++)
             {
+                // getting the label for the frequency for the bin
                 int freq = (int)exponential_freq_width(SAMPLE_RATE / 2, SAMPLE_RATE / (2 * FRAMES_PER_BUFFER), num_bins, label_bins[i]);
 
                 int pos_x = label_bins[i];
@@ -845,21 +964,24 @@ int main()
             }
         }
 
-        wrefresh(visualizer->window); // Refresh the screen to show the updated visuals
-        wrefresh(menu->window);
+        // Refresh the windows
+        wrefresh(visualizer->window);
         wrefresh(type_v->window);
+        wrefresh(menu->window);
 
         Pa_Sleep(sleep_time); // sleep to return cpu usage
 
+        // user input
         char key = getch();
-        // keypad(stdscr, true);
 
+        // toggle the visualiser type
         if (key == 9) // 9 is TAB in characters
         {
             frequency_visual = !frequency_visual;
             waveform_visual = !waveform_visual;
         }
 
+        // change the sleep time
         if (key == '+')
         {
             sleep_time++;
@@ -867,6 +989,17 @@ int main()
         if (key == '-')
         {
             sleep_time--;
+        }
+
+        // make sure the sleep time is not negative or too high (set at 150 max)
+        if (sleep_time < 0)
+        {
+            sleep_time = 0;
+        }
+
+        if (sleep_time > 150)
+        {
+            sleep_time = 150;
         }
 
         // Check if a key is pressed to exit the loop

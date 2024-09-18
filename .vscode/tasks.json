@@ -13,6 +13,8 @@
                 "portaudio",
                 "-l",
                 "ncurses",
+                "-l",
+                "sndfile",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}"
             ],
