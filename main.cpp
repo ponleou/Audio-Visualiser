@@ -1,15 +1,16 @@
 #include <portaudio.h>
 #include "kiss_fft/kiss_fftr.h"
-#include <stdio.h>
-#include <stdlib.h>
 #include <vector>
 #include <iostream>
 #include <cmath>
 #include <ncurses.h>
 #include <sndfile.h>
+#include <chrono>
 
 using std::string;
 using std::vector;
+using std::chrono::duration_cast;
+using std::chrono::high_resolution_clock;
 
 class audio_data
 {
@@ -63,15 +64,15 @@ private:
 
 public:
     // constructors
-    audio_data(int device_num, int channel_num, int sample_rate, int frames_per_buffer)
+    audio_data(int device_num, int channel_num, int frames_per_buffer)
     {
-        this->sample_rate = sample_rate;
-        this->frames_per_buffer = frames_per_buffer;
-
         err = Pa_Initialize(); // Pa_Initialize() initializes the portaudio library, it returns a PaError object
         // if the initialization is successful, it returns paNoError value of the object
         // if the initialization is unsuccessful, it returns an error value
         check_error(err);
+
+        this->sample_rate = Pa_GetDeviceInfo(device_num)->defaultSampleRate; // sample rate of the device
+        this->frames_per_buffer = frames_per_buffer;
 
         start_stream(device_num, channel_num);
 
@@ -142,6 +143,11 @@ public:
     void set_output_buffer(vector<float> output_buffer) const
     {
         Pa_WriteStream(stream, output_buffer.data(), frames_per_buffer);
+    }
+
+    int get_sample_rate() const
+    {
+        return sample_rate;
     }
 };
 
@@ -510,6 +516,8 @@ public:
 
     void read_file(string file_path)
     {
+        output_vector.clear();
+
         if (file_path != this->file_path)
         {
             if (audio_file != nullptr)
@@ -535,7 +543,6 @@ public:
         if (audio_file != nullptr)
         {
             sf_count_t seeked = sf_seek(audio_file, current_frame, SEEK_SET);
-            output_vector.clear();
 
             if (seeked > -1)
             {
@@ -748,33 +755,37 @@ vector<float> extract_single_channel(vector<float> audio_frames, int channel_num
 
 int main()
 {
-    const int SAMPLE_RATE = 44100;      // sample rate, the number of samples per second
     const int FRAMES_PER_BUFFER = 1024; // frames per buffer, the number of samples per buffer
     const int CHANNEL_NUM = 2;          // number of channels to record (2 is stereo, 1 is mono)
 
-    int sleep_time = 50;          // time to sleep in milliseconds before each run of the loop
+    int refresh_time = 50;        // time to sleep in milliseconds before each run of the loop
     bool frequency_visual = true; // toggle for frequency visualiser
     bool waveform_visual = false; // toggle for waveform visualiser
+
+    bool inserting_file_path = false; // if the user is entering a file path
+    string audio_file_path = "";      // path to the audio file
 
     int device_num; // the number of the device to use
     audio_data::print_device_info();
     std::cout << "Enter device number: ";
     std::cin >> device_num;
 
-    audio_data audio(device_num, CHANNEL_NUM, SAMPLE_RATE, FRAMES_PER_BUFFER); // Initialize audio data
-    fft_data fft(FRAMES_PER_BUFFER);                                           // Initialize FFT
-    tui_data tui(1, 1);                                                        // Initialize TUI with ncurses
-    audio_file_data audio_file(FRAMES_PER_BUFFER);                             // Initialize audio file data
+    audio_data audio(device_num, CHANNEL_NUM, FRAMES_PER_BUFFER); // Initialize audio data
+    fft_data fft(FRAMES_PER_BUFFER);                              // Initialize FFT
+    tui_data tui(1, 1);                                           // Initialize TUI with ncurses
+    audio_file_data audio_file(FRAMES_PER_BUFFER);                // Initialize audio file data
 
     // creating the dynamic windows for the TUI
     tui.add_dynamic_window(0.2, 0.2, 0.0, 0.0, 0, 2, true, "Visualiser Type", true);
-    tui.add_dynamic_window(0.2, 0.8, 0.0, 0.2, 0, 2, true, "Menu", true);
+    tui.add_dynamic_window(0.2, 0.5, 0.0, 0.2, 0, 2, true, "Menu", true);
     tui.add_dynamic_window(0.8, 1.0, 0.2, 0.0, 1, 1, true, "Visualiser", true);
+    tui.add_dynamic_window(0.2, 0.3, 0.0, 0.7, 0, 2, true, "Insert File", true);
 
     // accessing each dynamic window object with its index
     const dynamic_window_data *type_v = tui.get_window(0);
     const dynamic_window_data *menu = tui.get_window(1);
     const dynamic_window_data *visualizer = tui.get_window(2);
+    const dynamic_window_data *insert_file = tui.get_window(3);
 
     // if the terminal supports colors, set the colors for the visualiser
     if (has_colors())
@@ -784,192 +795,259 @@ int main()
         init_pair(2, COLOR_GREEN, COLOR_BLACK);
     }
 
+    auto start_time = high_resolution_clock::now();
+
+    tui.update();
+
     while (true)
     {
-        tui.update();
-
-        // text for the menu section
-        string quit_control_text = "[q]";
-        string quit_text = " Quit";
-
-        string switch_control_text = "[TAB]";
-        string switch_text = " Switch Visuals";
-
-        string refresh_control_text = "[+/-]";
-        string refresh_text = " Refresh Time: " + std::to_string(sleep_time) + " ms";
-
-        int switch_text_length = switch_text.length() + switch_control_text.length();
-        int quit_text_length = quit_control_text.length() + quit_text.length();
-        int refresh_text_length = refresh_control_text.length() + refresh_text.length();
-
-        // printing the control text (it has colors if the terminal supports colors)
-        if (has_colors())
-            wattr_on(menu->window, COLOR_PAIR(2), nullptr);
-
-        mvwprintw(menu->window, (menu->height - 1) / 2, 0, switch_control_text.c_str());
-        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3, quit_control_text.c_str());
-        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_text_length + 3, refresh_control_text.c_str());
-
-        wattr_off(menu->window, COLOR_PAIR(2), nullptr);
-
-        // printing the menu text (without colors)
-        mvwprintw(menu->window, (menu->height - 1) / 2, switch_control_text.length(), switch_text.c_str());
-        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_control_text.length(), quit_text.c_str());
-        mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_text_length + 3 + refresh_control_text.length(), refresh_text.c_str());
-
-        // text for the visualiser type section
-        // the current visualiser type is highlighted (with colours if supported)
-        if (frequency_visual)
-        {
-            if (has_colors())
-                wattr_on(type_v->window, COLOR_PAIR(1), nullptr);
-            else
-                wattr_on(type_v->window, A_STANDOUT, nullptr);
-        }
-
-        mvwprintw(type_v->window, type_v->height / 3 - 1, 0, "Frequency Visualiser");
-
-        wattr_off(type_v->window, A_STANDOUT, nullptr);
-        wattr_off(type_v->window, COLOR_PAIR(1), nullptr);
-
-        if (waveform_visual)
-        {
-            if (has_colors())
-                wattr_on(type_v->window, COLOR_PAIR(1), nullptr);
-            else
-                wattr_on(type_v->window, A_STANDOUT, nullptr);
-        }
-
-        mvwprintw(type_v->window, type_v->height / 3 * 2, 0, "Waveform Visualiser");
-
-        wattr_off(type_v->window, A_STANDOUT, nullptr);
-        wattr_off(type_v->window, COLOR_PAIR(1), nullptr);
-
-        // Get input buffer from audio
-        audio_file.read_file("./ignore/walpurgis.mp3");
+        audio_file.read_file(audio_file_path); // Read audio file
         vector<float> input_buffer = audio_file.get_output_frames();
 
-        if (input_buffer.size() == 0)
+        // only playing the sound if the audio file is not empty
+        if (input_buffer.size() != 0)
+            audio.set_output_buffer(input_buffer);
+
+        string insert_file_control_text = "[p]";
+        int insert_file_text_length = insert_file_control_text.length();
+        string insert_file_text = " Enter file path: ";
+
+        while (inserting_file_path)
         {
-            input_buffer = audio.get_input_buffer();
-        }
-        else
-        {
-            audio.set_output_buffer(input_buffer); // Set output buffer to play sound
-        }
+            char ch = getch();
 
-        int num_bins = visualizer->width; // Number of bins for the visualizer
-
-        if (waveform_visual)
-        {
-            input_buffer = extract_single_channel(input_buffer, CHANNEL_NUM);
-            // converting the audio frames from the input buffer to work as audio waves for the visualiser
-            vector<float> audio_waves = to_audio_waves(input_buffer, num_bins);
-
-            normalise_array(audio_waves); // Normalize the audio waves
-
-            for (int i = 0; i < visualizer->width; i++)
+            if (ch == 10) // Enter key
             {
-                // when the audio wave's value is 0, it will be drawn in the middle of the window
-                int mid_height = (int)floor((double)(visualizer->height - 1) / 2.0);
-
-                // drawing the audio waves as displacement from the center/middle of the window
-                if (audio_waves.size() > i)
-                {
-                    int height = (int)floor((double)mid_height * audio_waves[i]);
-                    int next_height = 0;
-                    if (i + 1 < audio_waves.size())
-                    {
-                        next_height = (int)floor((double)mid_height * audio_waves[i + 1]);
-                    }
-                    else
-                    {
-                        next_height = -(int)floor((double)mid_height * audio_waves[i - 1]);
-                    }
-
-                    // if the current height's gradient is positive, it will be drawn with a upward slope (/)
-                    if (next_height > height)
-                    {
-                        mvwprintw(visualizer->window, mid_height - height, i, "/");
-                    }
-
-                    // if the current height's gradient is negative, it will be drawn with a downward slope (\)
-                    if (next_height < height)
-                    {
-                        mvwprintw(visualizer->window, mid_height - height, i, "\\");
-                    }
-
-                    // if the current height's gradient is zero, it will be drawn with a horizontal line (-)
-                    if (next_height == height)
-                    {
-                        mvwprintw(visualizer->window, mid_height - height, i, "-");
-                    }
-
-                    // drawing the line of 0 displacement
-                    mvwprintw(visualizer->window, mid_height, i, "=");
-                }
+                inserting_file_path = false;
             }
-        }
-
-        if (frequency_visual)
-        {
-            // Set input for FFT and get amplitude output
-            fft.set_input(input_buffer, CHANNEL_NUM);
-            vector<float> amplitudes_raw = fft.get_amplitude_output();
-
-            // Convert amplitude values to frequency bins with exponential scale
-            vector<float> frequency_bins = to_freq_bins(amplitudes_raw, num_bins, SAMPLE_RATE); // Adjust the number of bins as needed
-            normalise_array(frequency_bins);                                                    // Normalize amplitudes
-
-            // getting the specific bins that will be labeled
-            vector<int> label_bins;
-            set_labeled_bins(label_bins, frequency_bins.size(), num_bins);
-
-            // Draw visualizer bars
-            for (int i = 0; i < frequency_bins.size(); i++)
+            else if (ch == 27) // Escape key
             {
-                mvwprintw(visualizer->window, visualizer->height - 2, i, "=");
-                // Print line under the bars, on the second last time from the margin (window_margin + 2), leaving a space at the bottom
+                inserting_file_path = false;
+                audio_file_path = "";
+            }
+            else if (ch == 127) // Backspace key
+            {
+                wclear(insert_file->window);
 
-                int height = (int)(frequency_bins[i] * (float)(visualizer->height - 2));
-
-                // drawing from top to bottom
-                for (int j = 0; j < height; j++)
-                {
-                    // max_height is the bottom coordinate of the window, max_height - height is the top coordinate of the window for the bars
-                    mvwprintw(visualizer->window, visualizer->height - 3 - j, i, "#"); // Print visualizer bars at position (row, column)
-                }
+                if (audio_file_path.size() > 0)
+                    audio_file_path.resize(audio_file_path.size() - 1);
+            }
+            else if (ch != ERR) // Backspace key
+            {
+                audio_file_path += static_cast<char>(ch);
             }
 
-            // section for the frequency labels
-            for (int i = 0; i < label_bins.size(); i++)
+            if (has_colors())
+                wattr_on(insert_file->window, COLOR_PAIR(2), nullptr);
+
+            mvwprintw(insert_file->window, (insert_file->height - 1) / 3, 0, insert_file_control_text.c_str());
+
+            wattr_off(insert_file->window, COLOR_PAIR(2), nullptr);
+
+            mvwprintw(insert_file->window, (insert_file->height - 1) / 3, insert_file_text_length, insert_file_text.c_str());
+
+            if (has_colors())
+                wattr_on(insert_file->window, COLOR_PAIR(1), nullptr);
+            else
+                wattr_on(insert_file->window, A_STANDOUT, nullptr);
+
+            mvwprintw(insert_file->window, insert_file->height / 3 * 2, 0, audio_file_path.c_str());
+
+            wattr_off(insert_file->window, A_STANDOUT, nullptr);
+            wattr_off(insert_file->window, COLOR_PAIR(1), nullptr);
+
+            wrefresh(insert_file->window);
+        }
+
+        // delay refresh time to decrease CPU usage
+        if (duration_cast<std::chrono::milliseconds>(high_resolution_clock::now() - start_time).count() > refresh_time)
+        {
+            if (audio_file.get_output_frames().size() == 0)
+                input_buffer = audio.get_input_buffer(); // Get input buffer from microphone if audio file is empty
+
+            tui.update(); // screen is cleared
+            start_time = high_resolution_clock::now();
+
+            // text for the menu section
+            string quit_control_text = "[q]";
+            string quit_text = " Quit";
+
+            string switch_control_text = "[TAB]";
+            string switch_text = " Switch Visuals";
+
+            string refresh_control_text = "[+/-]";
+            string refresh_text = " Refresh Time: " + std::to_string(refresh_time) + " ms";
+
+            int switch_text_length = switch_text.length() + switch_control_text.length();
+            int quit_text_length = quit_control_text.length() + quit_text.length();
+            int refresh_text_length = refresh_control_text.length() + refresh_text.length();
+
+            // printing the control text (it has colors if the terminal supports colors)
+            if (has_colors())
+                wattr_on(menu->window, COLOR_PAIR(2), nullptr);
+
+            mvwprintw(menu->window, (menu->height - 1) / 2, 0, switch_control_text.c_str());
+            mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3, quit_control_text.c_str());
+            mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_text_length + 3, refresh_control_text.c_str());
+
+            wattr_off(menu->window, COLOR_PAIR(2), nullptr);
+
+            // printing the menu text (without colors)
+            mvwprintw(menu->window, (menu->height - 1) / 2, switch_control_text.length(), switch_text.c_str());
+            mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_control_text.length(), quit_text.c_str());
+            mvwprintw(menu->window, (menu->height - 1) / 2, switch_text_length + 3 + quit_text_length + 3 + refresh_control_text.length(), refresh_text.c_str());
+
+            // text for the insert file section
+            if (has_colors())
+                wattr_on(insert_file->window, COLOR_PAIR(2), nullptr);
+
+            mvwprintw(insert_file->window, (insert_file->height - 1) / 3, 0, insert_file_control_text.c_str());
+
+            wattr_off(insert_file->window, COLOR_PAIR(2), nullptr);
+
+            mvwprintw(insert_file->window, (insert_file->height - 1) / 3, insert_file_text_length, insert_file_text.c_str());
+            mvwprintw(insert_file->window, insert_file->height / 3 * 2, 0, audio_file_path.c_str());
+
+            // text for the visualiser type section
+            // the current visualiser type is highlighted (with colours if supported)
+            if (frequency_visual)
             {
-                // getting the label for the frequency for the bin
-                int freq = (int)exponential_freq_width(SAMPLE_RATE / 2, SAMPLE_RATE / (2 * FRAMES_PER_BUFFER), num_bins, label_bins[i]);
-
-                int pos_x = label_bins[i];
-                int pos_y = visualizer->height - 1;
-
-                int max_text_width = 3;
-
-                if (pos_x + max_text_width > visualizer->width)
-                {
-                    pos_x = visualizer->width - max_text_width;
-                }
-
-                if (freq < 1000)
-                    mvwprintw(visualizer->window, pos_y, pos_x, "%d", freq);
+                if (has_colors())
+                    wattr_on(type_v->window, COLOR_PAIR(1), nullptr);
                 else
-                    mvwprintw(visualizer->window, pos_y, pos_x, "%dk", (freq / 1000));
+                    wattr_on(type_v->window, A_STANDOUT, nullptr);
             }
+
+            mvwprintw(type_v->window, (type_v->height - 1) / 3, 0, "Frequency Visualiser");
+
+            wattr_off(type_v->window, A_STANDOUT, nullptr);
+            wattr_off(type_v->window, COLOR_PAIR(1), nullptr);
+
+            if (waveform_visual)
+            {
+                if (has_colors())
+                    wattr_on(type_v->window, COLOR_PAIR(1), nullptr);
+                else
+                    wattr_on(type_v->window, A_STANDOUT, nullptr);
+            }
+
+            mvwprintw(type_v->window, type_v->height / 3 * 2, 0, "Waveform Visualiser");
+
+            wattr_off(type_v->window, A_STANDOUT, nullptr);
+            wattr_off(type_v->window, COLOR_PAIR(1), nullptr);
+
+            int num_bins = visualizer->width; // Number of bins for the visualizer
+
+            if (waveform_visual)
+            {
+                input_buffer = extract_single_channel(input_buffer, CHANNEL_NUM);
+                // converting the audio frames from the input buffer to work as audio waves for the visualiser
+                vector<float> audio_waves = to_audio_waves(input_buffer, num_bins);
+
+                normalise_array(audio_waves); // Normalize the audio waves
+
+                for (int i = 0; i < visualizer->width; i++)
+                {
+                    // when the audio wave's value is 0, it will be drawn in the middle of the window
+                    int mid_height = (int)floor((double)(visualizer->height - 1) / 2.0);
+
+                    // drawing the audio waves as displacement from the center/middle of the window
+                    if (audio_waves.size() > i)
+                    {
+                        int height = (int)floor((double)mid_height * audio_waves[i]);
+                        int next_height = 0;
+                        if (i + 1 < audio_waves.size())
+                        {
+                            next_height = (int)floor((double)mid_height * audio_waves[i + 1]);
+                        }
+                        else
+                        {
+                            next_height = -(int)floor((double)mid_height * audio_waves[i - 1]);
+                        }
+
+                        // if the current height's gradient is positive, it will be drawn with a upward slope (/)
+                        if (next_height > height)
+                        {
+                            mvwprintw(visualizer->window, mid_height - height, i, "/");
+                        }
+
+                        // if the current height's gradient is negative, it will be drawn with a downward slope (\)
+                        if (next_height < height)
+                        {
+                            mvwprintw(visualizer->window, mid_height - height, i, "\\");
+                        }
+
+                        // if the current height's gradient is zero, it will be drawn with a horizontal line (-)
+                        if (next_height == height)
+                        {
+                            mvwprintw(visualizer->window, mid_height - height, i, "-");
+                        }
+
+                        // drawing the line of 0 displacement
+                        mvwprintw(visualizer->window, mid_height, i, "=");
+                    }
+                }
+            }
+
+            if (frequency_visual)
+            {
+                // Set input for FFT and get amplitude output
+                fft.set_input(input_buffer, CHANNEL_NUM);
+                vector<float> amplitudes_raw = fft.get_amplitude_output();
+
+                // Convert amplitude values to frequency bins with exponential scale
+                vector<float> frequency_bins = to_freq_bins(amplitudes_raw, num_bins, audio.get_sample_rate()); // Adjust the number of bins as needed
+                normalise_array(frequency_bins);                                                                // Normalize amplitudes
+
+                // getting the specific bins that will be labeled
+                vector<int> label_bins;
+                set_labeled_bins(label_bins, frequency_bins.size(), num_bins);
+
+                // Draw visualizer bars
+                for (int i = 0; i < frequency_bins.size(); i++)
+                {
+                    mvwprintw(visualizer->window, visualizer->height - 2, i, "=");
+                    // Print line under the bars, on the second last time from the margin (window_margin + 2), leaving a space at the bottom
+
+                    int height = (int)(frequency_bins[i] * (float)(visualizer->height - 2));
+
+                    // drawing from top to bottom
+                    for (int j = 0; j < height; j++)
+                    {
+                        // max_height is the bottom coordinate of the window, max_height - height is the top coordinate of the window for the bars
+                        mvwprintw(visualizer->window, visualizer->height - 3 - j, i, "#"); // Print visualizer bars at position (row, column)
+                    }
+                }
+
+                // section for the frequency labels
+                for (int i = 0; i < label_bins.size(); i++)
+                {
+                    // getting the label for the frequency for the bin
+                    int freq = (int)exponential_freq_width(audio.get_sample_rate() / 2, audio.get_sample_rate() / (2 * FRAMES_PER_BUFFER), num_bins, label_bins[i]);
+
+                    int pos_x = label_bins[i];
+                    int pos_y = visualizer->height - 1;
+
+                    int max_text_width = 3;
+
+                    if (pos_x + max_text_width > visualizer->width)
+                    {
+                        pos_x = visualizer->width - max_text_width;
+                    }
+
+                    if (freq < 1000)
+                        mvwprintw(visualizer->window, pos_y, pos_x, "%d", freq);
+                    else
+                        mvwprintw(visualizer->window, pos_y, pos_x, "%dk", (freq / 1000));
+                }
+            }
+
+            // Refresh the windows
+            wrefresh(visualizer->window);
+            wrefresh(type_v->window);
+            wrefresh(menu->window);
+            wrefresh(insert_file->window);
         }
-
-        // Refresh the windows
-        wrefresh(visualizer->window);
-        wrefresh(type_v->window);
-        wrefresh(menu->window);
-
-        Pa_Sleep(sleep_time); // sleep to return cpu usage
 
         // user input
         char key = getch();
@@ -984,22 +1062,22 @@ int main()
         // change the sleep time
         if (key == '+')
         {
-            sleep_time++;
+            refresh_time++;
         }
         if (key == '-')
         {
-            sleep_time--;
+            refresh_time--;
+        }
+
+        if (key == 'p')
+        {
+            inserting_file_path = true;
         }
 
         // make sure the sleep time is not negative or too high (set at 150 max)
-        if (sleep_time < 0)
+        if (refresh_time < 1)
         {
-            sleep_time = 0;
-        }
-
-        if (sleep_time > 150)
-        {
-            sleep_time = 150;
+            refresh_time = 1;
         }
 
         // Check if a key is pressed to exit the loop
