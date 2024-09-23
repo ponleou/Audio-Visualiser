@@ -9,6 +9,8 @@
 
 using std::string;
 using std::vector;
+
+// for timing of refreshes
 using std::chrono::duration_cast;
 using std::chrono::high_resolution_clock;
 
@@ -20,8 +22,8 @@ private:
     PaStreamParameters input_parameters;
     PaStreamParameters output_parameters;
     vector<float> input_buffer; // input buffer, a vector of floats that contains the input audio data
-    int sample_rate;
-    int frames_per_buffer;
+    int sample_rate;            // sample rate of the audio device
+    int frames_per_buffer;      // number of audio frames to collect at a time
 
     // checks if there is an error in the portaudio library initialization or other processes
     // static because it is a utility function that is not dependent on the object, also another static method is also accessing it
@@ -481,16 +483,31 @@ public:
     }
 };
 
+// class to read audio files
 class audio_file_data
 {
 private:
-    SF_INFO audio_info;
-    SNDFILE *audio_file;
-    float *output_frames;
+    SF_INFO audio_info;   // stores the info of the audio file
+    SNDFILE *audio_file;  // a pointer to the audio files
+    float *output_frames; // audio frames from an audio file are outputted into this pointer (malloc)
     int frames_per_buffer;
-    sf_count_t current_frame;
+    sf_count_t current_frame; // stores the position of audio frame where the audio file is currently at (the others have been read)
     string file_path;
-    vector<float> output_vector;
+    vector<float> output_vector; // the output vector that contains the audio data, can be accessed through its object
+
+    // set ups before reading audio files
+    void audio_file_setup()
+    {
+        // close the current audio file if it is opened
+        if (audio_file != nullptr)
+        {
+            sf_close(audio_file);
+        }
+
+        // open the new audio file and start from the beginning (current frame = 0)
+        audio_file = sf_open(file_path.c_str(), SFM_READ, &audio_info);
+        current_frame = 0;
+    }
 
 public:
     audio_file_data(int frames_per_buffer)
@@ -498,7 +515,7 @@ public:
         this->frames_per_buffer = frames_per_buffer;
         current_frame = 0;
         audio_file = nullptr;
-        output_frames = nullptr;
+        output_frames = {};
         file_path = "";
     }
 
@@ -514,46 +531,93 @@ public:
         }
     }
 
-    void read_file(string file_path)
+    // process to read the audio file (outputs into the output vector)
+    void read_file(int resampling_rate)
     {
-        output_vector.clear();
-
-        if (file_path != this->file_path)
+        // making sure the audio file is opened and can be read in sections (if not, the audio file cannot be used)
+        if (audio_file == nullptr || !audio_info.seekable)
         {
-            if (audio_file != nullptr)
-            {
-                sf_close(audio_file);
-            }
-
-            this->file_path = file_path;
-            audio_file = sf_open(file_path.c_str(), SFM_READ, &audio_info);
-            current_frame = 0;
-
-            if (audio_file != nullptr && audio_info.seekable)
-            {
-                if (output_frames != nullptr)
-                {
-                    free(output_frames);
-                }
-
-                output_frames = (float *)malloc(sizeof(float) * frames_per_buffer * audio_info.channels);
-            }
+            return;
         }
 
-        if (audio_file != nullptr)
+        // always clear the output vector before reading the file
+        output_vector.clear();
+
+        // if the output frames was allocated before, free it
+        if (output_frames != nullptr)
         {
-            sf_count_t seeked = sf_seek(audio_file, current_frame, SEEK_SET);
+            free(output_frames);
+        }
 
-            if (seeked > -1)
+        // allocate the output frames based on the resampling rate and the frames per buffer
+        // note that the resampling rate is the rate that the audio file will be resampled to
+        output_frames = (float *)malloc(sizeof(float) * frames_per_buffer * (int)ceil((double)audio_info.samplerate / (double)resampling_rate) * audio_info.channels);
+
+        // the number of audio frames that will be read from the audio file to create one output buffer
+        int audio_frames_per_buffer = (int)ceil((double)frames_per_buffer * ((double)audio_info.samplerate / (double)resampling_rate));
+
+        // seek to the current frame position in the audio file, and start reading from there
+        sf_count_t seeked = sf_seek(audio_file, current_frame, SEEK_SET);
+
+        if (seeked > -1)
+        {
+            // read the audio file into audio frames as float
+            sf_readf_float(audio_file, output_frames, audio_frames_per_buffer);
+            current_frame += audio_frames_per_buffer;
+
+            // if the audio file's sampling rate is higher, the ratio will be more than 1
+            // if the audio file's sampling rate is lower, the ratio will be less than 1
+            double resampling_ratio = (double)audio_info.samplerate / resampling_rate;
+
+            // processing for each audio frames
+            for (int i = 0; i < frames_per_buffer; i++)
             {
-                sf_readf_float(audio_file, output_frames, frames_per_buffer);
-                current_frame += frames_per_buffer;
+                // the current audio output frame index in relation to the audio file's sampling rate
+                double resampled_index_ratio = i * resampling_ratio;
 
-                for (int i = 0; i < frames_per_buffer * audio_info.channels; i++)
+                // the 2 frames between the current ratio index (start and end audio frames) that will be interpolated
+                int start_audio_frame = (int)floor(resampled_index_ratio);
+                int end_audio_frame = (int)ceil(resampled_index_ratio);
+
+                // in case end_audio_frame is out of bounds
+                if (end_audio_frame >= audio_frames_per_buffer)
                 {
-                    output_vector.push_back(output_frames[i]);
+                    end_audio_frame = start_audio_frame;
+                }
+
+                // the ratio that the current index is in between the start and end audio frames
+                double ratio_between_audio_frames = resampled_index_ratio - start_audio_frame;
+
+                // processing for each channels in one audio frame
+                for (int ch = 0; ch < audio_info.channels; ch++)
+                {
+                    // the 2 frames between the current ratio index for one channel
+                    int start_channel_frame = start_audio_frame * audio_info.channels + ch;
+                    int end_channel_frame = end_audio_frame * audio_info.channels + ch;
+
+                    // linear interpolation between the 2 frames
+                    float frame_gradient = (output_frames[end_channel_frame] - output_frames[start_channel_frame]);
+                    // the y difference between the 2 frames (the x difference is always 1 because the frames are 1 unit apart)
+
+                    // finding the new y value according to the ratio between the 2 frames
+                    float interpolated_sample = (frame_gradient * ratio_between_audio_frames) + output_frames[start_channel_frame];
+
+                    // store each frame in the output vector
+                    output_vector.push_back(interpolated_sample);
                 }
             }
+        }
+    }
+
+    // call to input an audio file
+    void input_file(string file_path)
+    {
+        // if the file path is different from the current file path, restart the process for the new file
+        // this block sets up the process to read the audio file
+        if (file_path != this->file_path)
+        {
+            this->file_path = file_path;
+            audio_file_setup();
         }
     }
 
@@ -801,8 +865,9 @@ int main()
 
     while (true)
     {
-        audio_file.read_file(audio_file_path); // Read audio file
-        vector<float> input_buffer = audio_file.get_output_frames();
+        audio_file.input_file(audio_file_path);                      // input audio file for reading
+        audio_file.read_file(audio.get_sample_rate());               // read the audio file
+        vector<float> input_buffer = audio_file.get_output_frames(); // get the audio file's output frames
 
         // only playing the sound if the audio file is not empty
         if (input_buffer.size() != 0)
