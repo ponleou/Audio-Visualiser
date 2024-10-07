@@ -534,14 +534,14 @@ public:
     // process to read the audio file (outputs into the output vector)
     void read_file(int resampling_rate)
     {
+        // always clear the output vector before reading the file
+        output_vector.clear();
+
         // making sure the audio file is opened and can be read in sections (if not, the audio file cannot be used)
         if (audio_file == nullptr || !audio_info.seekable)
         {
             return;
         }
-
-        // always clear the output vector before reading the file
-        output_vector.clear();
 
         // if the output frames was allocated before, free it
         if (output_frames != nullptr)
@@ -829,6 +829,8 @@ int main()
     bool inserting_file_path = false; // if the user is entering a file path
     string audio_file_path = "";      // path to the audio file
 
+    bool audio_playing = false; // if the audio is playing
+
     int device_num; // the number of the device to use
     audio_data::print_device_info();
     std::cout << "Enter device number: ";
@@ -868,10 +870,14 @@ int main()
         audio_file.input_file(audio_file_path);                      // input audio file for reading
         audio_file.read_file(audio.get_sample_rate());               // read the audio file
         vector<float> input_buffer = audio_file.get_output_frames(); // get the audio file's output frames
+        audio_playing = false;                                       // audio is not playing
 
         // only playing the sound if the audio file is not empty
         if (input_buffer.size() != 0)
+        {
             audio.set_output_buffer(input_buffer);
+            audio_playing = true; // audio is playing
+        }
 
         string insert_file_control_text = "[p]";
         int insert_file_text_length = insert_file_control_text.length();
@@ -924,8 +930,9 @@ int main()
             wrefresh(insert_file->window);
         }
 
-        // delay refresh time to decrease CPU usage
-        if (duration_cast<std::chrono::milliseconds>(high_resolution_clock::now() - start_time).count() > refresh_time)
+        // delay refresh time to decrease CPU usage, only works if audio is playing
+        // when audio is not playing, the section below has a sleep function to decrease CPU usage better, that section only works when audio is not playing
+        if (duration_cast<std::chrono::milliseconds>(high_resolution_clock::now() - start_time).count() > refresh_time || !audio_playing)
         {
             if (audio_file.get_output_frames().size() == 0)
                 input_buffer = audio.get_input_buffer(); // Get input buffer from microphone if audio file is empty
@@ -1112,6 +1119,15 @@ int main()
             wrefresh(type_v->window);
             wrefresh(menu->window);
             wrefresh(insert_file->window);
+        }
+
+        if (!audio_playing)
+        {
+            timeout(refresh_time); // if audio is not playing, we can wait for user input, functions as sleep to decrease CPU usage
+        }
+        else
+        {
+            nodelay(stdscr, true); // if audio is playing, we cannot wait for user input, so we need to keep the program running
         }
 
         // user input
